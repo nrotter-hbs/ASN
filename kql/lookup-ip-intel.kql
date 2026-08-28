@@ -1,0 +1,21 @@
+// Microsoft Sentinel / Kusto
+// Enrich an IP with BGP ownership plus Spamhaus DROP / ASN-DROP intelligence.
+let IPv4ASN = externaldata(prefix:string,mask_length:int,ip_version:int,asn:string,organization:string,country:string,hits:long)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ipv4_ownership.csv"] with (format="csv", ignoreFirstRecord=true);
+let IPv6ASN = externaldata(prefix:string,mask_length:int,ip_version:int,asn:string,organization:string,country:string,hits:long)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ipv6_ownership.csv"] with (format="csv", ignoreFirstRecord=true);
+let MaliciousASN = externaldata(asn:string,organization:string,malicious:bool,confidence:string,category:string,source:string,source_url:string,last_seen:datetime)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/malicious_asns.csv"] with (format="csv", ignoreFirstRecord=true);
+let Drop4 = externaldata(prefix:string,ip_version:int,sbl_id:string,source:string,source_url:string,last_seen:datetime)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/spamhaus_drop_ipv4.csv"] with (format="csv", ignoreFirstRecord=true);
+let Drop6 = externaldata(prefix:string,ip_version:int,sbl_id:string,source:string,source_url:string,last_seen:datetime)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/spamhaus_drop_ipv6.csv"] with (format="csv", ignoreFirstRecord=true);
+let IPToCheck = "2607:fb91:44::1";
+let Ownership = union
+    (IPv4ASN | where ipv4_is_in_range(IPToCheck, prefix)),
+    (IPv6ASN | where ipv6_is_in_range(IPToCheck, prefix))
+    | top 1 by mask_length desc;
+let ASNHit = Ownership | join kind=leftouter MaliciousASN on asn | project ASN=asn, ASNOrganization=organization1, ASNMalicious=coalesce(malicious,false), ASNConfidence=confidence, ASNCategory=category, ASNSource=source;
+let IPHit = union
+    (Drop4 | where ipv4_is_in_range(IPToCheck, prefix)),
+    (Drop6 | where ipv6_is_in_range(IPToCheck, prefix))
+    | top 1 by ipv4_is_in_range(IPToCheck, prefix) desc, prefix desc;
+Ownership
+| join kind=leftouter ASNHit on ASN
+| join kind=leftouter IPHit on $left.prefix == $right.prefix
+| project IP=IPToCheck, Prefix=prefix, MaskLength=mask_length, ASN=asn, Organization=organization, Country=country, BGP_Hits=hits, ASNMalicious, ASNConfidence, ASNCategory, IPSpaceMalicious=iff(isnotempty(sbl_id), true, false), IPIntelSource=source1, IPIntelID=sbl_id
