@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Sentinel-ready BGP attribution and compact threat-intel datasets."""
+"""Build compact Sentinel-ready BGP attribution and threat-intel datasets."""
 from __future__ import annotations
 import csv,json,pathlib,urllib.request,ipaddress,datetime,re,math
 ROOT=pathlib.Path(__file__).resolve().parents[1];DATA=ROOT/'data';DATA.mkdir(parents=True,exist_ok=True)
@@ -9,26 +9,28 @@ FEODO='https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.json';CIN
 def get(url):
  r=urllib.request.Request(url,headers={'User-Agent':'ASN-Sentinel-data-pipeline/1.0'})
  with urllib.request.urlopen(r,timeout=180) as x:return x.read()
+def norm_asn(a):
+ a=str(a or '').strip().upper();return a.removeprefix('AS').strip()
 def load_asns():
  d={}
  for r in csv.DictReader(get(BGP_ASNS).decode('utf-8','replace').splitlines()):
-  a=(r.get('asn')or'').strip();n=(r.get('name')or r.get('organization')or'').strip();c=(r.get('cc')or'').strip()
-  if a:d[a if a.startswith('AS') else 'AS'+a]=(n,c)
+  a=norm_asn(r.get('asn'));n=(r.get('name')or r.get('organization')or'').strip();c=(r.get('cc')or'').strip()
+  if a:d[a]=(n,c)
  return d
 def load_routes():
  out=[]
  for line in get(BGP_TABLE).decode('utf-8','replace').splitlines():
   try:
-   o=json.loads(line);p=o.get('CIDR')or o.get('prefix');a=o.get('ASN')or o.get('asn')or o.get('origin')
+   o=json.loads(line);p=o.get('CIDR')or o.get('prefix');a=norm_asn(o.get('ASN')or o.get('asn')or o.get('origin'))
    if p and a:
-    n=ipaddress.ip_network(p,strict=False);out.append((str(n),n.prefixlen,n.version,'AS'+str(a).removeprefix('AS'),o.get('Hits','')))
+    n=ipaddress.ip_network(p,strict=False);out.append((str(n),n.prefixlen,n.version,a))
   except(ValueError,TypeError,json.JSONDecodeError):continue
  return out
 def write_owner(name,rs,ad):
  p=DATA/name
  with p.open('w',newline='',encoding='utf-8')as f:
-  w=csv.writer(f);w.writerow(['prefix','mask_length','asn','organization','country','hits'])
-  for pre,m,v,a,h in rs:n,c=ad.get(a,('',''));w.writerow([pre,m,a,n,c,h])
+  w=csv.writer(f);w.writerow(['prefix','mask_length','asn','organization','country'])
+  for pre,m,v,a in rs:n,c=ad.get(a,('',''));w.writerow([pre,m,a,n,c])
  s=p.stat().st_size/1048576;print(f'{name}: {s:.2f} MB')
  if s>=90:raise RuntimeError(f'{name} is {s:.1f} MB; refusing to approach GitHub 100 MB limit')
 def spam_records(kind):
@@ -58,14 +60,14 @@ def write_spam_asn(ad):
    if isinstance(x,str):a,r=x,''
    elif isinstance(x,dict):a=x.get('asn')or x.get('AS')or x.get('as_number')or x.get('autnum')or'';r=x.get('description')or x.get('reason')or''
    else:continue
-   a=str(a).strip();a=a if a.upper().startswith('AS')else'AS'+a
+   a=norm_asn(a)
    if a:w.writerow([a,ad.get(a,('',''))[0],'true','high',r or'Spamhaus ASN-DROP','Spamhaus',SPAM['asn'],s])
 def write_feodo(ad):
  p=DATA/'feodo_c2_ipv4.csv';data=json.loads(get(FEODO).decode('utf-8','replace'))
  with p.open('w',newline='',encoding='utf-8')as f:
   w=csv.writer(f);w.writerow(['ip','port','status','asn','organization','country','first_seen','last_seen','malware','source','source_url'])
   for x in data:
-   a='AS'+str(x.get('as_number',''));n,c=ad.get(a,(x.get('as_name',''),x.get('country','')));w.writerow([x.get('ip_address',''),x.get('port',''),x.get('status',''),a,n,x.get('country',''),x.get('first_seen',''),x.get('last_online',''),x.get('malware',''),'Feodo Tracker',FEODO])
+   a=norm_asn(x.get('as_number'));n,c=ad.get(a,(x.get('as_name',''),x.get('country','')));w.writerow([x.get('ip_address',''),x.get('port',''),x.get('status',''),a,n,x.get('country',''),x.get('first_seen',''),x.get('last_online',''),x.get('malware',''),'Feodo Tracker',FEODO])
  print(f'feodo_c2_ipv4.csv: {p.stat().st_size/1048576:.2f} MB')
 def write_text_ips(name,url,source,parts=1):
  data=get(url).decode('utf-8','replace').splitlines();items=[]
