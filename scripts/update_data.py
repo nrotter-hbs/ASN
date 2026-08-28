@@ -47,14 +47,27 @@ def write_csv(name, routes, asns):
         for prefix, mask, version, asn, hits in routes:
             org, cc = asns.get(asn, ("", "")); w.writerow([prefix, mask, version, asn, org, cc, hits])
     size = path.stat().st_size / 1024 / 1024; print(f"{path}: {size:.1f} MB")
-    if size >= 95: raise RuntimeError(f"{path} is {size:.1f} MB; split the dataset before GitHub's 100 MB limit")
+    if size >= 95: raise RuntimeError(f"{path} is {size:.1f} MB; dataset must be split before GitHub's 100 MB file limit")
 
 def spamhaus_records(kind):
-    raw = json.loads(get(SPAMHAUS[kind]).decode("utf-8", "replace"))
-    if isinstance(raw, list): records = raw
-    elif isinstance(raw, dict): records = raw.get("data", raw.get("asns", raw.get("cidrs", [])))
-    else: records = []
-    return records, raw
+    """Read Spamhaus JSON, including its JSON-lines representation."""
+    text = get(SPAMHAUS[kind]).decode("utf-8", "replace").strip()
+    try:
+        raw = json.loads(text)
+        if isinstance(raw, list): return raw, raw
+        if isinstance(raw, dict): return raw.get("data", raw.get("asns", raw.get("cidrs", []))), raw
+        return [], raw
+    except json.JSONDecodeError:
+        # Some Spamhaus endpoints return one JSON object per line (JSONL).
+        records = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line: continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return records, {}
 
 def parse_drop(kind):
     records, raw = spamhaus_records(kind)
