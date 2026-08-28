@@ -1,23 +1,26 @@
-// Microsoft Sentinel / Kusto
-// Loads the combined IPv4 + IPv6 BGP attribution CSV.
-// For IPv4 use ipv4_is_in_range(); for IPv6 use ipv6_is_in_range().
-let ASNData = externaldata(
-    prefix:string,
-    mask_length:int,
-    ip_version:int,
-    asn:string,
-    organization:string,
-    hits:long,
-    source:string
-)[
-    "https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ip_ownership.csv"
-]
-with (format="csv", ignoreFirstRecord=true);
-
+// Microsoft Sentinel: IPv4/IPv6 prefix -> ASN -> organization + malicious ASN intelligence.
 let IPToCheck = "2607:fb91:44::1";
-ASNData
-| where (ip_version == 4 and ipv4_is_in_range(IPToCheck, prefix))
-    or (ip_version == 6 and ipv6_is_in_range(IPToCheck, prefix))
+let MaliciousASN = externaldata(
+    asn:string, organization:string, malicious:bool, confidence:string,
+    category:string, source:string, source_url:string, last_seen:datetime
+)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/malicious_asns.csv"]
+with (format="csv", ignoreFirstRecord=true);
+let IPv6ASN = externaldata(
+    prefix:string, mask_length:int, ip_version:int, asn:string,
+    organization:string, country:string, hits:long
+)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ipv6_ownership.csv"]
+with (format="csv", ignoreFirstRecord=true);
+let IPv4ASN = externaldata(
+    prefix:string, mask_length:int, ip_version:int, asn:string,
+    organization:string, country:string, hits:long
+)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ipv4_ownership.csv"]
+with (format="csv", ignoreFirstRecord=true);
+let PrefixMatch = union
+    (IPv6ASN | where ipv6_is_in_range(IPToCheck, prefix)),
+    (IPv4ASN | where ipv4_is_in_range(IPToCheck, prefix));
+PrefixMatch
 | top 1 by mask_length desc
+| join kind=leftouter MaliciousASN on asn
 | project IP=IPToCheck, Prefix=prefix, ASN=asn, Organization=organization,
-          IPVersion=ip_version, BGP_Hits=hits, Source=source;
+    Country=country, BGP_Hits=hits, Malicious=malicious, Confidence=confidence,
+    Category=category, IntelSource=source, LastSeen=last_seen;
