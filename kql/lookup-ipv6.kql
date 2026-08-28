@@ -11,22 +11,15 @@ let ASNData = externaldata(
     country:string,
     hits:long,
     source:string
-)
-[
+)[
     "https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ipv6_ownership.csv"
 ]
 with (format="csv", ignoreFirstRecord=true);
 
 let IPToCheck = "2607:fb91:44::1";
-
 ASNData
 | where ip_version == 6
 | where ipv6_is_in_range(IPToCheck, prefix)
 | top 1 by mask_length desc
 | project IP=IPToCheck, Prefix=prefix, ASN=asn, Organization=organization,
           RIR=rir, Country=country, BGP_Hits=hits, Source=source;
-
-// ipv6_is_in_range() is available in Microsoft Sentinel and performs CIDR
-// containment against an IPv6 prefix. Sorting by mask_length descending is
-// important because BGP can contain overlapping prefixes; the most-specific
-// route is normally the best match.
