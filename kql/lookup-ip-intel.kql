@@ -1,31 +1,23 @@
 // Microsoft Sentinel / Kusto
-// Enrich an IPv4 or IPv6 address with BGP attribution and threat-intel feed hits.
-let IPv4ASN = externaldata(prefix:string,mask_length:int,asn:string,organization:string,country:string,hits:long)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ipv4_ownership.csv"] with (format="csv", ignoreFirstRecord=true);
-let IPv6ASN = externaldata(prefix:string,mask_length:int,asn:string,organization:string,country:string,hits:long)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ipv6_ownership.csv"] with (format="csv", ignoreFirstRecord=true);
+// Single-IP enrichment using compact BGP ownership + normalized malicious-IP intelligence.
+// ASN values are numeric strings without the "AS" prefix.
+let IPv4ASN = externaldata(prefix:string,mask_length:int,asn:string,organization:string,country:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ipv4_ownership.csv"] with (format="csv", ignoreFirstRecord=true);
+let IPv6ASN = externaldata(prefix:string,mask_length:int,asn:string,organization:string,country:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ipv6_ownership.csv"] with (format="csv", ignoreFirstRecord=true);
 let MaliciousASN = externaldata(asn:string,organization:string,malicious:bool,confidence:string,category:string,source:string,source_url:string,last_seen:datetime)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/malicious_asns.csv"] with (format="csv", ignoreFirstRecord=true);
+let Reputation4 = externaldata(ip:string,asn:string,organization:string,country:string,malicious:bool,confidence:string,category:string,source:string,first_seen:string,last_seen:string,malware:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ip_reputation_ipv4.csv"] with (format="csv", ignoreFirstRecord=true);
 let Drop4 = externaldata(prefix:string,ip_version:int,sbl_id:string,source:string,source_url:string,last_seen:datetime,asn:string,organization:string,country:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/spamhaus_drop_ipv4.csv"] with (format="csv", ignoreFirstRecord=true);
 let Drop6 = externaldata(prefix:string,ip_version:int,sbl_id:string,source:string,source_url:string,last_seen:datetime,asn:string,organization:string,country:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/spamhaus_drop_ipv6.csv"] with (format="csv", ignoreFirstRecord=true);
-let Feodo = externaldata(ip:string,port:int,status:string,asn:string,organization:string,country:string,first_seen:datetime,last_seen:string,malware:string,source:string,source_url:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/feodo_c2_ipv4.csv"] with (format="csv", ignoreFirstRecord=true);
-let CINS = externaldata(ip:string,source:string,source_url:string,last_seen:datetime,asn:string,organization:string,country:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/cins_malicious_ipv4.csv"] with (format="csv", ignoreFirstRecord=true);
-let DShield = union
- (externaldata(ip:string,source:string,source_url:string,last_seen:datetime,asn:string,organization:string,country:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/dshield_ipv4_01.csv"] with (format="csv", ignoreFirstRecord=true)),
- (externaldata(ip:string,source:string,source_url:string,last_seen:datetime,asn:string,organization:string,country:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/dshield_ipv4_02.csv"] with (format="csv", ignoreFirstRecord=true)),
- (externaldata(ip:string,source:string,source_url:string,last_seen:datetime,asn:string,organization:string,country:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/dshield_ipv4_03.csv"] with (format="csv", ignoreFirstRecord=true)),
- (externaldata(ip:string,source:string,source_url:string,last_seen:datetime,asn:string,organization:string,country:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/dshield_ipv4_04.csv"] with (format="csv", ignoreFirstRecord=true)),
- (externaldata(ip:string,source:string,source_url:string,last_seen:datetime,asn:string,organization:string,country:string)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/dshield_ipv4_05.csv"] with (format="csv", ignoreFirstRecord=true));
 let Fullbogon4 = externaldata(prefix:string,ip_version:int,source:string,last_seen:datetime)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/fullbogons_ipv4.csv"] with (format="csv", ignoreFirstRecord=true);
 let Fullbogon6 = externaldata(prefix:string,ip_version:int,source:string,last_seen:datetime)["https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/fullbogons_ipv6.csv"] with (format="csv", ignoreFirstRecord=true);
 let IPToCheck = "2607:fb91:44::1";
 let Ownership = union (IPv4ASN | where ipv4_is_in_range(IPToCheck,prefix)), (IPv6ASN | where ipv6_is_in_range(IPToCheck,prefix)) | top 1 by mask_length desc;
 let IPFeedHits = union
- (Feodo | where IPToCheck == ip | project Feed="Feodo Tracker",FeedMatch=ip,FeedCategory=malware,FeedConfidence="high",FeedASN=asn,FeedOrganization=organization,FeedCountry=country),
- (CINS | where IPToCheck == ip | project Feed="CINS Army",FeedMatch=ip,FeedCategory="malicious/scanner",FeedConfidence="medium",FeedASN=asn,FeedOrganization=organization,FeedCountry=country),
- (DShield | where IPToCheck == ip | project Feed="DShield",FeedMatch=ip,FeedCategory="observed attacker",FeedConfidence="medium",FeedASN=asn,FeedOrganization=organization,FeedCountry=country),
- (Drop4 | where ipv4_is_in_range(IPToCheck,prefix) | project Feed="Spamhaus DROP",FeedMatch=prefix,FeedCategory="malicious netblock",FeedConfidence="high",FeedASN=asn,FeedOrganization=organization,FeedCountry=country),
- (Drop6 | where ipv6_is_in_range(IPToCheck,prefix) | project Feed="Spamhaus DROPv6",FeedMatch=prefix,FeedCategory="malicious netblock",FeedConfidence="high",FeedASN=asn,FeedOrganization=organization,FeedCountry=country),
- (Fullbogon4 | where ipv4_is_in_range(IPToCheck,prefix) | project Feed="Team Cymru Fullbogons",FeedMatch=prefix,FeedCategory="fullbogon",FeedConfidence="high",FeedASN="",FeedOrganization="",FeedCountry=""),
- (Fullbogon6 | where ipv6_is_in_range(IPToCheck,prefix) | project Feed="Team Cymru Fullbogons",FeedMatch=prefix,FeedCategory="fullbogon",FeedConfidence="high",FeedASN="",FeedOrganization="",FeedCountry="");
+ (Reputation4 | where IPToCheck == ip | project Feed=source,FeedMatch=ip,FeedCategory=category,FeedConfidence=confidence,FeedASN=asn,FeedOrganization=organization,FeedCountry=country,Malware=malware),
+ (Drop4 | where ipv4_is_in_range(IPToCheck,prefix) | project Feed="Spamhaus DROP",FeedMatch=prefix,FeedCategory="malicious netblock",FeedConfidence="high",FeedASN=asn,FeedOrganization=organization,FeedCountry=country,Malware=""),
+ (Drop6 | where ipv6_is_in_range(IPToCheck,prefix) | project Feed="Spamhaus DROPv6",FeedMatch=prefix,FeedCategory="malicious netblock",FeedConfidence="high",FeedASN=asn,FeedOrganization=organization,FeedCountry=country,Malware=""),
+ (Fullbogon4 | where ipv4_is_in_range(IPToCheck,prefix) | project Feed="Team Cymru Fullbogons",FeedMatch=prefix,FeedCategory="fullbogon",FeedConfidence="high",FeedASN="",FeedOrganization="",FeedCountry="",Malware=""),
+ (Fullbogon6 | where ipv6_is_in_range(IPToCheck,prefix) | project Feed="Team Cymru Fullbogons",FeedMatch=prefix,FeedCategory="fullbogon",FeedConfidence="high",FeedASN="",FeedOrganization="",FeedCountry="",Malware="");
 Ownership
 | join kind=leftouter (MaliciousASN | project ASNKey=asn,ASNMalicious=malicious,ASNConfidence=confidence,ASNCategory=category,ASNIntelSource=source) on $left.asn==$right.ASNKey
-| summarize IPFeedMatches=make_set(pack("feed",Feed,"match",FeedMatch,"category",FeedCategory,"confidence",FeedConfidence,"asn",FeedASN,"organization",FeedOrganization,"country",FeedCountry)) by IPToCheck,Prefix=prefix,MaskLength=mask_length,ASN=asn,Organization=organization,Country=country,BGP_Hits=hits,ASNMalicious=coalesce(ASNMalicious,false),ASNConfidence,ASNCategory,ASNIntelSource
-| project IP=IPToCheck,Prefix,MaskLength,ASN,Organization,Country,BGP_Hits,ASNMalicious,ASNConfidence,ASNCategory,ASNIntelSource,IPFeedMatches
+| summarize IPFeedMatches=make_set(pack("feed",Feed,"match",FeedMatch,"category",FeedCategory,"confidence",FeedConfidence,"asn",FeedASN,"organization",FeedOrganization,"country",FeedCountry,"malware",Malware)) by IPToCheck,Prefix=prefix,MaskLength=mask_length,ASN=asn,Organization=organization,Country=country,ASNMalicious=coalesce(ASNMalicious,false),ASNConfidence,ASNCategory,ASNIntelSource
+| project IP=IPToCheck,Prefix,MaskLength,ASN,Organization,Country,ASNMalicious,ASNConfidence,ASNCategory,ASNIntelSource,IPFeedMatches
