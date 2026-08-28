@@ -26,63 +26,49 @@ def get(url: str) -> bytes:
     with urllib.request.urlopen(req, timeout=180) as response:
         return response.read()
 
-def load_bgp() -> list[dict]:
+def load_bgp():
     routes = []
     for line in get(BGP_TABLE).decode("utf-8", errors="replace").splitlines():
-        if not line.strip():
-            continue
+        if not line.strip(): continue
         try:
             obj = json.loads(line)
             cidr, asn = obj.get("CIDR", ""), obj.get("ASN", "")
-            if not cidr or not asn:
-                continue
+            if not cidr or not asn: continue
             network = ipaddress.ip_network(cidr, strict=False)
             routes.append({"network": network, "prefix": str(network), "mask_length": network.prefixlen, "ip_version": network.version, "asn": f"AS{asn}", "hits": obj.get("Hits", "")})
-        except (ValueError, TypeError, json.JSONDecodeError):
-            continue
+        except (ValueError, TypeError, json.JSONDecodeError): continue
     return routes
 
-def load_asns() -> dict[str, str]:
+def load_asns():
     result = {}
     for row in csv.DictReader(get(BGP_ASNS).decode("utf-8", errors="replace").splitlines()):
         asn, name = row.get("asn", "").strip(), row.get("name", "").strip()
-        if asn:
-            result[asn if asn.startswith("AS") else f"AS{asn}"] = name
+        if asn: result[asn if asn.startswith("AS") else f"AS{asn}"] = name
     return result
 
-def load_rir_allocations() -> list[dict]:
+def load_rir_allocations():
     allocations = []
     for rir, url in RIRS.items():
-        try:
-            raw = get(url).decode("utf-8", errors="replace")
+        try: raw = get(url).decode("utf-8", errors="replace")
         except Exception as exc:
-            print(f"WARNING: {rir}: {exc}")
-            continue
+            print(f"WARNING: {rir}: {exc}"); continue
         for line in raw.splitlines():
-            if not line or line.startswith("#"):
-                continue
+            if not line or line.startswith("#"): continue
             parts = line.split("|")
-            if len(parts) < 7 or parts[0] == "2" or parts[2] not in {"ipv4", "ipv6"}:
-                continue
+            if len(parts) < 7 or parts[0] == "2" or parts[2] not in {"ipv4", "ipv6"}: continue
             try:
-                start = ipaddress.ip_address(parts[3]); value = int(parts[4])
-                if parts[2] == "ipv6":
-                    networks = [ipaddress.ip_network(f"{start}/{value}", strict=False)]
-                else:
-                    networks = ipaddress.summarize_address_range(start, start + value - 1)
-                for network in networks:
-                    allocations.append({"network": network, "rir": rir, "country": parts[1]})
-            except (ValueError, TypeError):
-                continue
-    allocations.sort(key=lambda x: (x["network"].version, int(x["network"].network_address), x["network"].prefixlen))
+                start, value = ipaddress.ip_address(parts[3]), int(parts[4])
+                networks = [ipaddress.ip_network(f"{start}/{value}", strict=False)] if parts[2] == "ipv6" else ipaddress.summarize_address_range(start, start + value - 1)
+                for network in networks: allocations.append({"network": network, "rir": rir, "country": parts[1]})
+            except (ValueError, TypeError): continue
+    allocations.sort(key=lambda x: (x["network"].version, int(x["network"].network_address)))
     return allocations
 
 def make_indexes(allocations):
     indexes = {}
     for version in (4, 6):
         rows = [x for x in allocations if x["network"].version == version]
-        starts = [int(x["network"].network_address) for x in rows]
-        indexes[version] = (rows, starts)
+        indexes[version] = (rows, [int(x["network"].network_address) for x in rows])
     return indexes
 
 def find_rir(network, indexes):
@@ -91,18 +77,17 @@ def find_rir(network, indexes):
     pos = bisect.bisect_right(starts, target) - 1
     for i in range(pos, max(-1, pos - 128), -1):
         candidate = rows[i]
-        if target in candidate["network"]:
+        if target >= int(candidate["network"].network_address) and target <= int(candidate["network"].broadcast_address):
             return candidate
     return {"rir": "", "country": ""}
 
 def write_combined(routes, asns, rir_indexes, filename, ipv6_only=False):
-    fields = ["prefix", "network", "mask_length", "ip_version", "asn", "organization", "rir", "country", "hits", "source"]
     path = DATA / filename
+    fields = ["prefix", "network", "mask_length", "ip_version", "asn", "organization", "rir", "country", "hits", "source"]
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh); writer.writerow(fields)
         for route in routes:
-            if ipv6_only and route["ip_version"] != 6:
-                continue
+            if ipv6_only and route["ip_version"] != 6: continue
             rir = find_rir(route["network"], rir_indexes)
             writer.writerow([route["prefix"], str(route["network"].network_address), route["mask_length"], route["ip_version"], route["asn"], asns.get(route["asn"], ""), rir["rir"], rir["country"], route["hits"], "BGP+RIR"])
     print(f"Wrote {path}")
