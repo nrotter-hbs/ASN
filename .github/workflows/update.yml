@@ -39,7 +39,7 @@ jobs:
           python scripts/update_data.py
           python scripts/enrich_threat_intel.py
 
-      - name: Commit changes
+      - name: Replace generated data with fresh snapshot
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -50,17 +50,29 @@ jobs:
           fi
           git commit -m "Update ASN/IP ownership data"
 
-          git fetch origin main
-          git rebase origin/main
-
+          # Generated CSVs are snapshots, not mergeable source files.
+          # Rebase is intentionally avoided because it can create conflicts
+          # when the same generated files changed on main while this job ran.
           for attempt in 1 2 3; do
-            if git push origin HEAD:main; then
-              exit 0
-            fi
-            echo "Push attempt $attempt failed; refreshing main and retrying..."
             git fetch origin main
-            git rebase origin/main
+            if git merge-base --is-ancestor origin/main HEAD; then
+              if git push origin HEAD:main; then
+                exit 0
+              fi
+            else
+              echo "main advanced while data was generated; rebuilding from latest main"
+              git reset --hard origin/main
+              python scripts/update_data.py
+              python scripts/enrich_threat_intel.py
+              git add data/
+              if git diff --cached --quiet; then
+                echo "No data changes after refresh"
+                exit 0
+              fi
+              git commit -m "Update ASN/IP ownership data"
+            fi
+            echo "Push attempt $attempt failed; retrying..."
             sleep 5
           done
-          echo "Unable to push after 3 attempts"
+          echo "Unable to publish generated data after 3 attempts"
           exit 1
