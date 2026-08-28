@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Build Sentinel-ready BGP attribution and compact threat-intel datasets."""
 from __future__ import annotations
-import csv,json,pathlib,urllib.request,ipaddress,datetime,re
-ROOT=pathlib.Path(__file__).resolve().parents[1]; DATA=ROOT/'data'; DATA.mkdir(parents=True,exist_ok=True)
-BGP_TABLE='https://bgp.tools/table.jsonl'; BGP_ASNS='https://bgp.tools/asns.csv'
+import csv,json,pathlib,urllib.request,ipaddress,datetime,re,math
+ROOT=pathlib.Path(__file__).resolve().parents[1];DATA=ROOT/'data';DATA.mkdir(parents=True,exist_ok=True)
+BGP_TABLE='https://bgp.tools/table.jsonl';BGP_ASNS='https://bgp.tools/asns.csv'
 SPAM={'ipv4':'https://www.spamhaus.org/drop/drop_v4.json','ipv6':'https://www.spamhaus.org/drop/drop_v6.json','asn':'https://www.spamhaus.org/drop/asndrop.json'}
-FEODO='https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.json'; CINS='https://cinsscore.com/list/ci-badguys.txt'; DSHIELD='https://feeds.dshield.org/feeds/daily_sources'; FULL={'ipv4':'https://www.team-cymru.org/Services/Bogons/fullbogons-ipv4.txt','ipv6':'https://www.team-cymru.org/Services/Bogons/fullbogons-ipv6.txt'}
+FEODO='https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.json';CINS='https://cinsscore.com/list/ci-badguys.txt';DSHIELD='https://feeds.dshield.org/feeds/daily_sources';FULL={'ipv4':'https://www.team-cymru.org/Services/Bogons/fullbogons-ipv4.txt','ipv6':'https://www.team-cymru.org/Services/Bogons/fullbogons-ipv6.txt'}
 def get(url):
  r=urllib.request.Request(url,headers={'User-Agent':'ASN-Sentinel-data-pipeline/1.0'})
  with urllib.request.urlopen(r,timeout=180) as x:return x.read()
@@ -34,8 +34,8 @@ def write_owner(name,rs,ad):
 def spam_records(kind):
  t=get(SPAM[kind]).decode('utf-8','replace').strip()
  try:
-  j=json.loads(t);return (j if isinstance(j,list) else j.get('data',j.get('asns',j.get('cidrs',[])))),j
- except json.JSONDecodeError:return [json.loads(x) for x in t.splitlines() if x.strip()],{}
+  j=json.loads(t);return(j if isinstance(j,list)else j.get('data',j.get('asns',j.get('cidrs',[])))),j
+ except json.JSONDecodeError:return[json.loads(x)for x in t.splitlines()if x.strip()],{}
 def stamp(j):
  t=j.get('timestamp')if isinstance(j,dict)else None
  return datetime.datetime.fromtimestamp(t,datetime.timezone.utc).isoformat()if isinstance(t,(int,float))else datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -67,16 +67,21 @@ def write_feodo(ad):
   for x in data:
    a='AS'+str(x.get('as_number',''));n,c=ad.get(a,(x.get('as_name',''),x.get('country','')));w.writerow([x.get('ip_address',''),x.get('port',''),x.get('status',''),a,n,x.get('country',''),x.get('first_seen',''),x.get('last_online',''),x.get('malware',''),'Feodo Tracker',FEODO])
  print(f'feodo_c2_ipv4.csv: {p.stat().st_size/1048576:.2f} MB')
-def write_text_ips(name,url,source):
- p=DATA/name;now=datetime.datetime.now(datetime.timezone.utc).isoformat();count=0
- with p.open('w',newline='',encoding='utf-8')as f:
-  w=csv.writer(f);w.writerow(['ip','source','source_url','last_seen'])
-  for line in get(url).decode('utf-8','replace').splitlines():
-   m=re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b',line)
-   if not m:continue
-   try:v=str(ipaddress.IPv4Address(m.group(0)));w.writerow([v,source,url,now]);count+=1
+def write_text_ips(name,url,source,parts=1):
+ data=get(url).decode('utf-8','replace').splitlines();items=[]
+ for line in data:
+  m=re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b',line)
+  if m:
+   try:items.append(str(ipaddress.IPv4Address(m.group(0))))
    except ValueError:pass
- print(f'{name}: {p.stat().st_size/1048576:.2f} MB ({count:,} IPs)')
+ items=list(dict.fromkeys(items));parts=max(1,parts,math.ceil(len(items)/700000));chunk=math.ceil(len(items)/parts);now=datetime.datetime.now(datetime.timezone.utc).isoformat()
+ for i in range(parts):
+  vals=items[i*chunk:(i+1)*chunk]
+  if not vals:continue
+  path=DATA/(name.replace('.csv',f'_{i+1:02d}.csv') if parts>1 else name)
+  with path.open('w',newline='',encoding='utf-8')as f:
+   w=csv.writer(f);w.writerow(['ip','source','source_url','last_seen']);w.writerows((v,source,url,now)for v in vals)
+  print(f'{path.name}: {path.stat().st_size/1048576:.2f} MB ({len(vals):,} IPs)')
 def write_full(name,url,version):
  p=DATA/name;now=datetime.datetime.now(datetime.timezone.utc).isoformat();count=0
  with p.open('w',newline='',encoding='utf-8')as f:
@@ -89,4 +94,4 @@ def write_full(name,url,version):
    if n.version==version:w.writerow([str(n),version,'Team Cymru Fullbogons',now]);count+=1
  print(f'{name}: {p.stat().st_size/1048576:.2f} MB ({count:,} prefixes)')
 if __name__=='__main__':
- ad=load_asns();rs=load_routes();print(f'Loaded {len(rs):,} BGP routes');write_owner('ipv4_ownership.csv',[r for r in rs if r[2]==4],ad);write_owner('ipv6_ownership.csv',[r for r in rs if r[2]==6],ad);write_spam_asn(ad);write_spam('spamhaus_drop_ipv4.csv','ipv4');write_spam('spamhaus_drop_ipv6.csv','ipv6');write_feodo(ad);write_text_ips('cins_malicious_ipv4.csv',CINS,'CINS Army');write_text_ips('dshield_ipv4.csv',DSHIELD,'DShield daily sources');write_full('fullbogons_ipv4.csv',FULL['ipv4'],4);write_full('fullbogons_ipv6.csv',FULL['ipv6'],6)
+ ad=load_asns();rs=load_routes();print(f'Loaded {len(rs):,} BGP routes');write_owner('ipv4_ownership.csv',[r for r in rs if r[2]==4],ad);write_owner('ipv6_ownership.csv',[r for r in rs if r[2]==6],ad);write_spam_asn(ad);write_spam('spamhaus_drop_ipv4.csv','ipv4');write_spam('spamhaus_drop_ipv6.csv','ipv6');write_feodo(ad);write_text_ips('cins_malicious_ipv4.csv',CINS,'CINS Army');write_text_ips('dshield_ipv4.csv',DSHIELD,'DShield daily sources',parts=5);write_full('fullbogons_ipv4.csv',FULL['ipv4'],4);write_full('fullbogons_ipv6.csv',FULL['ipv6'],6)
