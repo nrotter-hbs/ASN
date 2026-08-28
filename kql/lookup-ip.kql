@@ -1,0 +1,23 @@
+// Microsoft Sentinel / Kusto
+// Loads the combined IPv4 + IPv6 BGP attribution CSV.
+// For IPv4 use ipv4_is_in_range(); for IPv6 use ipv6_is_in_range().
+let ASNData = externaldata(
+    prefix:string,
+    mask_length:int,
+    ip_version:int,
+    asn:string,
+    organization:string,
+    hits:long,
+    source:string
+)[
+    "https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ip_ownership.csv"
+]
+with (format="csv", ignoreFirstRecord=true);
+
+let IPToCheck = "2607:fb91:44::1";
+ASNData
+| where (ip_version == 4 and ipv4_is_in_range(IPToCheck, prefix))
+    or (ip_version == 6 and ipv6_is_in_range(IPToCheck, prefix))
+| top 1 by mask_length desc
+| project IP=IPToCheck, Prefix=prefix, ASN=asn, Organization=organization,
+          IPVersion=ip_version, BGP_Hits=hits, Source=source;
