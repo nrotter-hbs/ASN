@@ -1,39 +1,34 @@
 # ASN / IP Ownership Data
 
-This repository builds a free, periodically updated IPv4/IPv6 network attribution dataset from public Internet routing and Regional Internet Registry (RIR) data.
+Free, periodically updated IPv4 + IPv6 network attribution for Microsoft Sentinel/KQL.
 
-## Data sources
+## Generated data
 
-- BGP.tools `table.jsonl`: currently visible BGP prefixes and origin ASNs.
-- BGP.tools `asns.csv`: ASN-to-name mapping.
-- ARIN, RIPE NCC, APNIC, LACNIC, and AFRINIC extended delegated statistics: RIR registration data.
+- `data/ip_ownership.csv` — combined IPv4 + IPv6 BGP prefix attribution.
+- `data/ipv6_ownership.csv` — IPv6-only copy for smaller Sentinel lookups.
 
-The dataset deliberately keeps **routing attribution** and **RIR registration** separate. The ASN announcing a prefix is not necessarily the same organization that holds the underlying registration.
+CSV columns:
 
-## Generated files
+`prefix,mask_length,ip_version,asn,organization,hits,source`
 
-- `data/routes.csv` — routed prefix, origin ASN, and BGP visibility (`Hits`).
-- `data/asns.csv` — ASN, organization/name, and BGP.tools class.
-- `data/rir_delegated.csv` — normalized RIR delegated-resource records.
+The dataset is based on currently visible BGP routes from BGP.tools. BGP routing attribution answers which ASN is announcing a prefix; it is not necessarily the same as the RIR registration holder.
 
-## Update locally
+## Sentinel
 
-```bash
-python scripts/update_data.py
-```
+Use `kql/lookup-ip.kql` for a unified IPv4/IPv6 lookup. It uses `ipv4_is_in_range()` and `ipv6_is_in_range()` and selects the most-specific matching prefix.
+
+Use `kql/lookup-ipv6.kql` when only IPv6 is needed.
+
+Raw CSV URL for Sentinel:
+
+`https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/ip_ownership.csv`
+
+## Update
+
+The GitHub Actions workflow runs daily and can also be started manually. The generator intentionally keeps the CSV compact enough for normal GitHub repository file limits; it does not include the raw BGP table or expanded RIR allocations.
 
 No API key is required.
 
-## Automated updates
+## Source
 
-GitHub Actions runs the update on a schedule and can also be started manually with **Actions → Update ASN/IP data → Run workflow**.
-
-BGP.tools asks consumers to cache the routing table and not download it more often than every 30 minutes; this workflow therefore updates once per day.
-
-## Example
-
-An IPv6 address beginning with `2607:fb91:` can be matched against the routed-prefix dataset and ASN mapping to determine its current origin ASN and organization. Always prefer the most-specific matching BGP prefix when classifying an address.
-
-## Attribution
-
-This repository consumes publicly available data from the sources above. See each source's terms and documentation before redistributing the generated datasets.
+BGP.tools provides machine-readable BGP prefix/origin ASN data and ASN name mapping. See its documentation for usage and caching guidance.
