@@ -62,7 +62,7 @@ def build_reputation():
   w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(sorted(seen.values(),key=lambda x:(x['ip'],x['source'])))
  print(f'ip_reputation_ipv4.csv: {out.stat().st_size/1048576:.2f} MB ({len(seen):,} records)')
 def build_high_fidelity():
- """Build one normalized table for high-confidence individual IPs and prefixes."""
+ """Build one normalized table for high-confidence IPs plus malicious prefixes and ASN-derived BGP prefixes."""
  records=[]
  rep=DATA/'ip_reputation_ipv4.csv'
  if rep.exists():
@@ -77,6 +77,32 @@ def build_high_fidelity():
    for r in csv.DictReader(f):
     if r.get('prefix'):
      records.append({'indicator':r['prefix'],'indicator_type':f'IPv{version}Prefix','ip_version':version,'prefix':r['prefix'],'asn':norm_asn(r.get('asn')),'organization':r.get('organization',''),'country':r.get('country',''),'malicious':'true','confidence':'high','category':'malicious netblock','source':r.get('source',''),'first_seen':'','last_seen':r.get('last_seen',''),'malware':''})
+
+ # Expand Spamhaus ASN-DROP entries to their currently announced BGP prefixes.
+ # Both IPv4 and IPv6 prefixes are included. Ownership is taken from the current
+ # bgp.tools-derived ownership snapshots in ipv4_ownership.csv / ipv6_ownership.csv.
+ malicious_asns=set()
+ asn_file=DATA/'malicious_asns.csv'
+ if asn_file.exists():
+  with asn_file.open(encoding='utf-8',newline='') as f:
+   for r in csv.DictReader(f):
+    a=norm_asn(r.get('asn'))
+    if str(r.get('malicious','')).strip().lower()=='true' and a:
+     malicious_asns.add(a)
+
+ asn_prefix_count={}
+ for version in (4,6):
+  path=DATA/f'ipv{version}_ownership.csv'
+  if not path.exists():continue
+  with path.open(encoding='utf-8',newline='') as f:
+   for r in csv.DictReader(f):
+    a=norm_asn(r.get('asn'));p=r.get('prefix','')
+    if a in malicious_asns and p:
+     records.append({'indicator':p,'indicator_type':f'MaliciousASNIPv{version}Prefix','ip_version':str(version),'prefix':p,'asn':a,'organization':r.get('organization',''),'country':r.get('country',''),'malicious':'true','confidence':'high','category':'malicious ASN associated prefix','source':'Spamhaus ASN-DROP + BGP','first_seen':'','last_seen':'','malware':''})
+     asn_prefix_count[a]=asn_prefix_count.get(a,0)+1
+ if malicious_asns:
+  print(f'Spamhaus ASN-DROP ASNs: {len(malicious_asns):,}; associated BGP prefixes added: {sum(asn_prefix_count.values()):,}')
+
  out=DATA/'high_fidelity_indicators.csv';fields=['indicator','indicator_type','ip_version','prefix','asn','organization','country','malicious','confidence','category','source','first_seen','last_seen','malware']
  dedup={tuple(r[k] for k in ('indicator','source','category')):r for r in records}
  with out.open('w',encoding='utf-8',newline='') as f:
