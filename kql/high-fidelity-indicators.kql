@@ -1,0 +1,40 @@
+// Microsoft Sentinel / Kusto
+// Single externaldata() lookup for high-fidelity malicious IPs and prefixes.
+// ASN values are numeric strings without the "AS" prefix.
+let HighFidelity = externaldata(
+    indicator:string,
+    indicator_type:string,
+    ip_version:int,
+    prefix:string,
+    asn:string,
+    organization:string,
+    country:string,
+    malicious:bool,
+    confidence:string,
+    category:string,
+    source:string,
+    first_seen:string,
+    last_seen:string,
+    malware:string
+)
+[
+    "https://raw.githubusercontent.com/nrotter-hbs/ASN/main/data/high_fidelity_indicators.csv"
+]
+with (format="csv", ignoreFirstRecord=true);
+HighFidelity
+| project
+    Indicator=indicator,
+    IndicatorType=indicator_type,
+    IPVersion=ip_version,
+    Prefix=prefix,
+    ASN=asn,
+    Organization=organization,
+    Country=country,
+    Malicious=malicious,
+    Confidence=confidence,
+    Category=category,
+    Source=source,
+    FirstSeen=first_seen,
+    LastSeen=last_seen,
+    Malware=malware
+| order by IndicatorType asc, Indicator asc
