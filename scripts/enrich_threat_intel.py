@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enrich threat-intel feeds with BGP ASN metadata and build normalized reputation indexes."""
+"""Enrich threat-intel feeds with BGP ASN metadata and build normalized Sentinel indexes."""
 from __future__ import annotations
 import csv,pathlib,ipaddress,datetime,glob
 import pytricia
@@ -16,7 +16,8 @@ def build_tries():
 def lookup(tries,value):
  try:
   obj=ipaddress.ip_network(value,strict=False) if '/' in value else ipaddress.ip_address(value)
-  hit=tries[obj.version].get(str(obj.network_address if hasattr(obj,'network_address') else obj))
+  key=str(obj.network_address if hasattr(obj,'network_address') else obj)
+  hit=tries[obj.version].get(key)
   return hit if hit else ('','','')
  except ValueError:return ('','','')
 def enrich_ip_file(path,tries):
@@ -42,7 +43,6 @@ def enrich_prefix_file(path,tries):
  with path.open('w',encoding='utf-8',newline='') as f:
   w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(rows)
 def build_reputation():
- """Combine point-IP feeds into one deduplicated Sentinel lookup table."""
  files=[DATA/'feodo_c2_ipv4.csv',DATA/'cins_malicious_ipv4.csv']+[DATA/x for x in glob.glob('dshield_ipv4_*.csv',root_dir=DATA)]
  seen={}
  for path in files:
@@ -51,32 +51,42 @@ def build_reputation():
    for r in csv.DictReader(f):
     ip=r.get('ip','').strip()
     if not ip:continue
-    source=r.get('source','').strip();
-    if not source:
-     if path.name.startswith('feodo'):source='Feodo Tracker'
-     elif path.name.startswith('cins'):source='CINS Army'
-     else:source='DShield'
+    source=r.get('source','').strip() or ('Feodo Tracker' if path.name.startswith('feodo') else 'CINS Army' if path.name.startswith('cins') else 'DShield')
     if source=='Feodo Tracker':category='malware C2';confidence='high';malware=r.get('malware','')
     elif source=='CINS Army':category='malicious/scanner';confidence='medium';malware=''
     else:category='observed attacker';confidence='medium';malware=''
     key=(ip,source)
-    seen[key]={
-      'ip':ip,'asn':norm_asn(r.get('asn')),'organization':r.get('organization',''),'country':r.get('country',''),
-      'malicious':'true','confidence':confidence,'category':category,'source':source,
-      'first_seen':r.get('first_seen',''),'last_seen':r.get('last_seen','') or NOW,'malware':malware
-    }
- out=DATA/'ip_reputation_ipv4.csv'
- fields=['ip','asn','organization','country','malicious','confidence','category','source','first_seen','last_seen','malware']
+    seen[key]={'ip':ip,'asn':norm_asn(r.get('asn')),'organization':r.get('organization',''),'country':r.get('country',''),'malicious':'true','confidence':confidence,'category':category,'source':source,'first_seen':r.get('first_seen',''),'last_seen':r.get('last_seen','') or NOW,'malware':malware}
+ out=DATA/'ip_reputation_ipv4.csv';fields=['ip','asn','organization','country','malicious','confidence','category','source','first_seen','last_seen','malware']
  with out.open('w',encoding='utf-8',newline='') as f:
   w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(sorted(seen.values(),key=lambda x:(x['ip'],x['source'])))
  print(f'ip_reputation_ipv4.csv: {out.stat().st_size/1048576:.2f} MB ({len(seen):,} records)')
+def build_high_fidelity():
+ """Build one normalized table for high-confidence individual IPs and prefixes."""
+ records=[]
+ rep=DATA/'ip_reputation_ipv4.csv'
+ if rep.exists():
+  with rep.open(encoding='utf-8',newline='') as f:
+   for r in csv.DictReader(f):
+    if str(r.get('confidence','')).strip().lower()=='high' and r.get('ip'):
+     records.append({'indicator':r['ip'],'indicator_type':'IP','ip_version':'4','prefix':'','asn':norm_asn(r.get('asn')),'organization':r.get('organization',''),'country':r.get('country',''),'malicious':'true','confidence':'high','category':r.get('category',''),'source':r.get('source',''),'first_seen':r.get('first_seen',''),'last_seen':r.get('last_seen',''),'malware':r.get('malware','')})
+ for name,version in (('spamhaus_drop_ipv4.csv','4'),('spamhaus_drop_ipv6.csv','6')):
+  path=DATA/name
+  if not path.exists():continue
+  with path.open(encoding='utf-8',newline='') as f:
+   for r in csv.DictReader(f):
+    if r.get('prefix'):
+     records.append({'indicator':r['prefix'],'indicator_type':f'IPv{version}Prefix','ip_version':version,'prefix':r['prefix'],'asn':norm_asn(r.get('asn')),'organization':r.get('organization',''),'country':r.get('country',''),'malicious':'true','confidence':'high','category':'malicious netblock','source':r.get('source',''),'first_seen':'','last_seen':r.get('last_seen',''),'malware':''})
+ out=DATA/'high_fidelity_indicators.csv';fields=['indicator','indicator_type','ip_version','prefix','asn','organization','country','malicious','confidence','category','source','first_seen','last_seen','malware']
+ dedup={tuple(r[k] for k in ('indicator','source','category')):r for r in records}
+ with out.open('w',encoding='utf-8',newline='') as f:
+  w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(sorted(dedup.values(),key=lambda x:(x['indicator_type'],x['indicator'],x['source'])))
+ print(f'high_fidelity_indicators.csv: {out.stat().st_size/1048576:.2f} MB ({len(dedup):,} records)')
 def main():
- tries=build_tries()
- ip_files=[DATA/'cins_malicious_ipv4.csv',DATA/'feodo_c2_ipv4.csv']+[DATA/x for x in glob.glob('dshield_ipv4_*.csv',root_dir=DATA)]
+ tries=build_tries();ip_files=[DATA/'cins_malicious_ipv4.csv',DATA/'feodo_c2_ipv4.csv']+[DATA/x for x in glob.glob('dshield_ipv4_*.csv',root_dir=DATA)]
  for p in ip_files:
   if p.exists():enrich_ip_file(p,tries)
  for p in (DATA/'spamhaus_drop_ipv4.csv',DATA/'spamhaus_drop_ipv6.csv'):
   if p.exists():enrich_prefix_file(p,tries)
- build_reputation()
- print('Threat-intel ASN enrichment and normalized reputation build complete')
+ build_reputation();build_high_fidelity();print('Threat-intel ASN enrichment and normalized reputation indexes complete')
 if __name__=='__main__':main()
